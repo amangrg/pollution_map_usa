@@ -1,0 +1,407 @@
+// Initialize the map centered on the United States
+var map = L.map("map", {
+  center: [37.8, -96],
+  zoom: 4,
+  scrollWheelZoom: true,
+  tap: false,
+  // Adjust the map to accommodate the info panel
+  zoomControl: false,
+});
+
+L.control.zoom({ position: "topright" }).addTo(map);
+
+// Add a base layer (Carto Light)
+var light = L.tileLayer(
+  "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
+  {
+    attribution: "&copy; OpenStreetMap contributors",
+  }
+).addTo(map);
+
+// Control layers
+var controlLayers = L.control
+  .layers(null, null, {
+    position: "topright",
+    collapsed: false,
+  })
+  .addTo(map);
+
+controlLayers.addBaseLayer(light, "Carto Light basemap");
+
+// Store all data
+var allData = [];
+
+// Load data from CSV
+$.get("./data/pollution_data.csv", function (csvString) {
+  allData = Papa.parse(csvString, {
+    header: true,
+    dynamicTyping: true,
+    skipEmptyLines: true,
+  }).data;
+
+  // Set default date range inputs based on data
+  var dates = allData
+    .map(function (row) {
+      return new Date(row.Date);
+    })
+    .filter(function (date) {
+      return !isNaN(date);
+    });
+
+  if (dates.length === 0) {
+    alert("No valid dates found in the data.");
+    return;
+  }
+
+  var minDate = new Date(Math.min.apply(null, dates));
+  var maxDate = new Date(Math.max.apply(null, dates));
+
+  // Format dates to 'YYYY-MM-DD' for input[type=date]
+  var minDateStr = minDate.toISOString().split("T")[0];
+  var maxDateStr = maxDate.toISOString().split("T")[0];
+
+  $("#start-date").val(minDateStr);
+  $("#end-date").val(maxDateStr);
+
+  // Initial processing and display
+  processDataAndDisplayMarkers();
+});
+
+// Event listener for Update Map button
+$("#update-map").on("click", function () {
+  processDataAndDisplayMarkers();
+});
+
+function processDataAndDisplayMarkers() {
+  // Remove existing markers
+  if (window.markersLayer) {
+    map.removeLayer(window.markersLayer);
+  }
+
+  // Get date range from inputs
+  var startDate = new Date($("#start-date").val());
+  var endDate = new Date($("#end-date").val());
+
+  if (isNaN(startDate)) {
+    // If start date is invalid, set to earliest date in data
+    var dates = allData
+      .map(function (row) {
+        return new Date(row.Date);
+      })
+      .filter(function (date) {
+        return !isNaN(date);
+      });
+    startDate = new Date(Math.min.apply(null, dates));
+  }
+
+  if (isNaN(endDate)) {
+    // If end date is invalid, set to latest date in data
+    var dates = allData
+      .map(function (row) {
+        return new Date(row.Date);
+      })
+      .filter(function (date) {
+        return !isNaN(date);
+      });
+    endDate = new Date(Math.max.apply(null, dates));
+  }
+
+  // Filter data to selected date range
+  var filteredData = allData.filter(function (row) {
+    var date = new Date(row.Date);
+    return date >= startDate && date <= endDate;
+  });
+
+  if (filteredData.length === 0) {
+    alert("No data available for the selected date range.");
+    return;
+  }
+
+  // Aggregate data per city
+  var dataByCity = {};
+  filteredData.forEach(function (row) {
+    var cityKey = row.City + ", " + row.State;
+    if (!dataByCity[cityKey]) {
+      dataByCity[cityKey] = {
+        City: row.City,
+        State: row.State,
+        latitude: row.latitude,
+        longitude: row.longitude,
+        count: 0,
+        pm25_sum: 0,
+        dataPoints: [],
+      };
+    }
+    dataByCity[cityKey].count += 1;
+    dataByCity[cityKey].pm25_sum += row.pm25_median || 0;
+    dataByCity[cityKey].dataPoints.push(row);
+  });
+
+  // Clear existing markers
+  if (window.markersLayer) {
+    window.markersLayer.clearLayers();
+  } else {
+    window.markersLayer = L.layerGroup().addTo(map);
+  }
+
+  // Define color scale for PM2.5 using D3
+  var avgPm25Values = Object.values(dataByCity).map(function (d) {
+    return d.pm25_sum / d.count;
+  });
+  var pm25Extent = d3.extent(avgPm25Values);
+  var colorScale = d3
+    .scaleSequential()
+    .domain(pm25Extent)
+    .interpolator(d3.interpolateReds);
+
+  // For each city, create a marker
+  Object.keys(dataByCity).forEach(function (cityKey) {
+    var cityData = dataByCity[cityKey];
+    var latitude = cityData.latitude;
+    var longitude = cityData.longitude;
+
+    // Check if latitude and longitude are valid numbers
+    if (
+      typeof latitude === "number" &&
+      !isNaN(latitude) &&
+      typeof longitude === "number" &&
+      !isNaN(longitude)
+    ) {
+      // Calculate average PM2.5 for the city
+      var avgPM25 = cityData.pm25_sum / cityData.count;
+
+      // Create a marker with color based on average PM2.5
+      var marker = L.circleMarker([latitude, longitude], {
+        radius: 8,
+        fillColor: colorScale(avgPM25),
+        color: "#000",
+        weight: 1,
+        opacity: 1,
+        fillOpacity: 0.8,
+      });
+
+      // Add event listener for when the marker is clicked
+      marker.on("click", function () {
+        // Open info panel with city details
+        showInfoPanel(cityData, startDate, endDate, colorScale, pm25Extent);
+      });
+
+      // Add marker to layer group
+      window.markersLayer.addLayer(marker);
+    }
+  });
+
+  // Adjust the map view to show all markers
+  var groupBounds = window.markersLayer.getBounds();
+  if (groupBounds.isValid()) {
+    map.fitBounds(groupBounds);
+  }
+
+  // Add legend
+  addLegend(colorScale, pm25Extent);
+}
+
+// Function to show info panel
+function showInfoPanel(cityData, startDate, endDate, colorScale, pm25Extent) {
+  var infoPanel = document.getElementById("info-panel");
+  var infoContent = document.getElementById("info-content");
+
+  // Format dates
+  var startDateStr = startDate.toISOString().split("T")[0];
+  var endDateStr = endDate.toISOString().split("T")[0];
+
+  // Create content
+  var htmlContent = `
+      <h2>${cityData.City}, ${cityData.State}</h2>
+      <p><strong>Date Range:</strong> ${startDateStr} to ${endDateStr}</p>
+      <p><strong>Average PM2.5:</strong> ${(
+        cityData.pm25_sum / cityData.count
+      ).toFixed(2)}</p>
+      <label for="pollutant-select">Select Pollutant:</label>
+      <select id="pollutant-select">
+        <option value="o3_median">O3</option>
+        <option value="pm25_median">PM2.5</option>
+        <option value="no2_median">NO2</option>
+        <option value="so2_median">SO2</option>
+        <option value="co_median">CO</option>
+        <option value="pm10_median">PM10</option>
+      </select>
+      <div id="pollutant-chart" class="chart"></div>
+    `;
+
+  infoContent.innerHTML = htmlContent;
+
+  // Show the panel
+  infoPanel.classList.remove("hidden");
+
+  // Add event listener to the dropdown
+  var pollutantSelect = document.getElementById("pollutant-select");
+  pollutantSelect.addEventListener("change", function () {
+    generatePollutantChart(cityData, pollutantSelect.value);
+  });
+
+  // Generate initial chart
+  generatePollutantChart(cityData, pollutantSelect.value);
+
+  // Close panel when clicking outside
+  map.on("click", closeInfoPanel);
+}
+
+// Function to close info panel
+function closeInfoPanel() {
+  var infoPanel = document.getElementById("info-panel");
+  infoPanel.classList.add("hidden");
+  map.off("click", closeInfoPanel);
+}
+
+// Function to generate pollutant chart
+function generatePollutantChart(cityData, pollutant) {
+  var container = d3.select("#pollutant-chart");
+
+  // Clear previous content
+  container.html("");
+
+  var pollutantNames = {
+    o3_median: "O3",
+    pm25_median: "PM2.5",
+    no2_median: "NO2",
+    so2_median: "SO2",
+    co_median: "CO",
+    pm10_median: "PM10",
+  };
+
+  // Prepare data
+  var data = cityData.dataPoints
+    .map(function (d) {
+      return {
+        date: new Date(d.Date),
+        value: d[pollutant],
+      };
+    })
+    .filter((d) => !isNaN(d.value));
+
+  if (data.length > 0) {
+    // Set dimensions for the chart
+    var margin = { top: 20, right: 20, bottom: 50, left: 50 },
+      width = 300 - margin.left - margin.right,
+      height = 250 - margin.top - margin.bottom;
+
+    // Create SVG
+    var svg = container
+      .append("svg")
+      .attr("width", width + margin.left + margin.right)
+      .attr("height", height + margin.top + margin.bottom)
+      .style("margin-bottom", "20px")
+      .append("g")
+      .attr("transform", "translate(" + margin.left + "," + margin.top + ")");
+
+    // Set the ranges
+    var x = d3.scaleTime().range([0, width]);
+    var y = d3.scaleLinear().range([height, 0]);
+
+    // Define the line
+    var valueline = d3
+      .line()
+      .x(function (d) {
+        return x(d.date);
+      })
+      .y(function (d) {
+        return y(d.value);
+      });
+
+    // Scale the range of the data
+    x.domain(
+      d3.extent(data, function (d) {
+        return d.date;
+      })
+    );
+    y.domain([
+      0,
+      d3.max(data, function (d) {
+        return d.value;
+      }),
+    ]);
+
+    // Add the valueline path.
+    svg
+      .append("path")
+      .data([data])
+      .attr("class", "line")
+      .attr("d", valueline)
+      .attr("stroke", "#1f77b4")
+      .attr("stroke-width", 2)
+      .attr("fill", "none");
+
+    // Add the X Axis
+    svg
+      .append("g")
+      .attr("transform", "translate(0," + height + ")")
+      .call(d3.axisBottom(x).ticks(5).tickFormat(d3.timeFormat("%Y-%m-%d")))
+      .selectAll("text")
+      .attr("y", 10)
+      .attr("x", -5)
+      .attr("dy", ".35em")
+      .attr("transform", "rotate(45)")
+      .style("text-anchor", "start");
+
+    // Add the Y Axis
+    svg.append("g").call(d3.axisLeft(y));
+
+    // Add title
+    svg
+      .append("text")
+      .attr("x", width / 2)
+      .attr("y", 0 - margin.top / 2 + 5)
+      .attr("text-anchor", "middle")
+      .style("font-size", "16px")
+      .text(pollutantNames[pollutant]);
+
+    // Add Y axis label
+    svg
+      .append("text")
+      .attr("transform", "rotate(-90)")
+      .attr("y", 0 - margin.left + 15)
+      .attr("x", 0 - height / 2)
+      .attr("dy", "-1em")
+      .style("text-anchor", "middle")
+      .text("Value");
+  } else {
+    container.append("p").text("No data available for this pollutant.");
+  }
+}
+
+// Function to add legend
+function addLegend(colorScale, pm25Extent) {
+  // Remove existing legend
+  if (window.legendControl) {
+    map.removeControl(window.legendControl);
+  }
+
+  var legend = L.control({ position: "bottomleft" });
+
+  legend.onAdd = function (map) {
+    var div = L.DomUtil.create("div", "legend");
+    var grades = d3.range(
+      pm25Extent[0],
+      pm25Extent[1],
+      (pm25Extent[1] - pm25Extent[0]) / 5
+    );
+
+    div.innerHTML += "<b>Avg PM2.5</b><br>";
+    for (var i = 0; i < grades.length; i++) {
+      div.innerHTML +=
+        '<i style="background:' +
+        colorScale(grades[i]) +
+        '"></i> ' +
+        grades[i].toFixed(1) +
+        (grades[i + 1] ? "&ndash;" + grades[i + 1].toFixed(1) + "<br>" : "+");
+    }
+
+    return div;
+  };
+
+  legend.addTo(map);
+
+  // Save the legend control to remove it later
+  window.legendControl = legend;
+}

@@ -205,15 +205,16 @@ function showInfoPanel(cityData, startDate, endDate, colorScale, pm25Extent) {
   var startDateStr = startDate.toISOString().split("T")[0];
   var endDateStr = endDate.toISOString().split("T")[0];
 
-  var cityDisplayStr =
-    String(cityData.City).charAt(0).toUpperCase() +
-    String(cityData.City).slice(1);
+  var cityDisplayStr = cityData.City?.toLowerCase()
+    .split(" ")
+    .map((s) => s.charAt(0).toUpperCase() + s.substring(1))
+    .join(" ");
   var stateDisplayStr =
     String(cityData.State).charAt(0).toUpperCase() +
     String(cityData.State).slice(1);
   // Create content
   var htmlContent = `
-  <h2>${cityData.City}, ${cityData.State}</h2>
+  <h2>${cityDisplayStr}, ${stateDisplayStr}</h2>
   <p><strong>Date Range:</strong> ${startDateStr} to ${endDateStr}</p>
   <p><strong>Average PM2.5:</strong> ${(
     cityData.pm25_sum / cityData.count
@@ -278,12 +279,12 @@ function generatePollutantChart(cityData, pollutant, container, isFullscreen) {
   container.html("");
 
   var pollutantNames = {
-    o3_median: "O3",
-    pm25_median: "PM2.5",
-    no2_median: "NO2",
-    so2_median: "SO2",
-    co_median: "CO",
-    pm10_median: "PM10",
+    o3_median: "O3 Median",
+    pm25_median: "PM2.5 Median",
+    no2_median: "NO2 Median",
+    so2_median: "SO2 Median",
+    co_median: "CO Median",
+    pm10_median: "PM10 Median",
   };
 
   // Prepare data

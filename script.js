@@ -279,23 +279,31 @@ function generatePollutantChart(cityData, pollutant, container, isFullscreen) {
   container.html("");
 
   var pollutantNames = {
-    o3_median: "O3 Median",
-    pm25_median: "PM2.5 Median",
-    no2_median: "NO2 Median",
-    so2_median: "SO2 Median",
-    co_median: "CO Median",
-    pm10_median: "PM10 Median",
+    o3_median: "O3",
+    pm25_median: "PM2.5",
+    no2_median: "NO2",
+    so2_median: "SO2",
+    co_median: "CO",
+    pm10_median: "PM10",
   };
 
   // Prepare data
+  var parseDate = d3.timeParse("%Y-%m-%d"); // Adjust format as needed
+
   var data = cityData.dataPoints
     .map(function (d) {
+      var parsedDate = parseDate(d.Date);
+      var value = parseFloat(d[pollutant]);
       return {
-        date: new Date(d.Date),
-        value: d[pollutant],
+        date: parsedDate,
+        value: value,
       };
     })
-    .filter((d) => !isNaN(d.value));
+    .filter(function (d) {
+      return !isNaN(d.value) && d.date !== null;
+    });
+
+  console.log("Data for chart:", data);
 
   if (data.length > 0) {
     // Set dimensions for the chart
@@ -316,6 +324,28 @@ function generatePollutantChart(cityData, pollutant, container, isFullscreen) {
     var x = d3.scaleTime().range([0, width]);
     var y = d3.scaleLinear().range([height, 0]);
 
+    // Scale the range of the data
+    x.domain(
+      d3.extent(data, function (d) {
+        return d.date;
+      })
+    );
+
+    var yMin = d3.min(data, function (d) {
+      return d.value;
+    });
+    var yMax = d3.max(data, function (d) {
+      return d.value;
+    });
+
+    if (yMin === yMax) {
+      // Provide a small range around the single value
+      yMin = yMin - 1;
+      yMax = yMax + 1;
+    }
+
+    y.domain([yMin, yMax]);
+
     // Define the line
     var valueline = d3
       .line()
@@ -325,19 +355,6 @@ function generatePollutantChart(cityData, pollutant, container, isFullscreen) {
       .y(function (d) {
         return y(d.value);
       });
-
-    // Scale the range of the data
-    x.domain(
-      d3.extent(data, function (d) {
-        return d.date;
-      })
-    );
-    y.domain([
-      0,
-      d3.max(data, function (d) {
-        return d.value;
-      }),
-    ]);
 
     // Add the valueline path.
     svg

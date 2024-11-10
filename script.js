@@ -82,7 +82,7 @@ function processDataAndDisplayMarkers() {
   var startDate = new Date($("#start-date").val());
   var endDate = new Date($("#end-date").val());
 
-  if (isNaN(startDate)) {
+  if (!startDate) {
     // If start date is invalid, set to earliest date in data
     var dates = allData
       .map(function (row) {
@@ -94,7 +94,7 @@ function processDataAndDisplayMarkers() {
     startDate = new Date(Math.min.apply(null, dates));
   }
 
-  if (isNaN(endDate)) {
+  if (!endDate) {
     // If end date is invalid, set to latest date in data
     var dates = allData
       .map(function (row) {
@@ -137,12 +137,7 @@ function processDataAndDisplayMarkers() {
     dataByCity[cityKey].dataPoints.push(row);
   });
 
-  // Clear existing markers
-  if (window.markersLayer) {
-    window.markersLayer.clearLayers();
-  } else {
-    window.markersLayer = L.layerGroup().addTo(map);
-  }
+  window.markersLayer = L.featureGroup().addTo(map);
 
   // Define color scale for PM2.5 using D3
   var avgPm25Values = Object.values(dataByCity).map(function (d) {
@@ -210,24 +205,33 @@ function showInfoPanel(cityData, startDate, endDate, colorScale, pm25Extent) {
   var startDateStr = startDate.toISOString().split("T")[0];
   var endDateStr = endDate.toISOString().split("T")[0];
 
+  var cityDisplayStr =
+    String(cityData.City).charAt(0).toUpperCase() +
+    String(cityData.City).slice(1);
+  var stateDisplayStr =
+    String(cityData.State).charAt(0).toUpperCase() +
+    String(cityData.State).slice(1);
   // Create content
   var htmlContent = `
-      <h2>${cityData.City}, ${cityData.State}</h2>
-      <p><strong>Date Range:</strong> ${startDateStr} to ${endDateStr}</p>
-      <p><strong>Average PM2.5:</strong> ${(
-        cityData.pm25_sum / cityData.count
-      ).toFixed(2)}</p>
-      <label for="pollutant-select">Select Pollutant:</label>
-      <select id="pollutant-select">
-        <option value="o3_median">O3</option>
-        <option value="pm25_median">PM2.5</option>
-        <option value="no2_median">NO2</option>
-        <option value="so2_median">SO2</option>
-        <option value="co_median">CO</option>
-        <option value="pm10_median">PM10</option>
-      </select>
-      <div id="pollutant-chart" class="chart"></div>
-    `;
+  <h2>${cityData.City}, ${cityData.State}</h2>
+  <p><strong>Date Range:</strong> ${startDateStr} to ${endDateStr}</p>
+  <p><strong>Average PM2.5:</strong> ${(
+    cityData.pm25_sum / cityData.count
+  ).toFixed(2)}</p>
+  <div style="display: flex; align-items: center;">
+    <label for="pollutant-select" style="flex-grow: 1;">Select Pollutant:</label>
+  </div>
+  <select id="pollutant-select">
+    <option value="o3_median">O3</option>
+    <option value="pm25_median">PM2.5</option>
+    <option value="no2_median">NO2</option>
+    <option value="so2_median">SO2</option>
+    <option value="co_median">CO</option>
+    <option value="pm10_median">PM10</option>
+  </select>
+  <button id="fullscreen-chart" title="View Fullscreen" style="padding: 5px;">Full Screen View</button>
+  <div id="pollutant-chart" class="chart"></div>
+`;
 
   infoContent.innerHTML = htmlContent;
 
@@ -243,6 +247,18 @@ function showInfoPanel(cityData, startDate, endDate, colorScale, pm25Extent) {
   // Generate initial chart
   generatePollutantChart(cityData, pollutantSelect.value);
 
+  var fullscreenButton = document.getElementById("fullscreen-chart");
+  fullscreenButton.addEventListener("click", function () {
+    showFullscreenChart(cityData, pollutantSelect.value);
+  });
+
+  var closeButton = document.getElementById("close-info-panel");
+  closeButton.addEventListener("click", function () {
+    closeInfoPanel();
+  });
+
+  // Remove existing click listener to prevent multiple bindings
+  map.off("click", closeInfoPanel);
   // Close panel when clicking outside
   map.on("click", closeInfoPanel);
 }
@@ -255,8 +271,8 @@ function closeInfoPanel() {
 }
 
 // Function to generate pollutant chart
-function generatePollutantChart(cityData, pollutant) {
-  var container = d3.select("#pollutant-chart");
+function generatePollutantChart(cityData, pollutant, container, isFullscreen) {
+  container = container || d3.select("#pollutant-chart");
 
   // Clear previous content
   container.html("");
@@ -283,8 +299,8 @@ function generatePollutantChart(cityData, pollutant) {
   if (data.length > 0) {
     // Set dimensions for the chart
     var margin = { top: 20, right: 20, bottom: 50, left: 50 },
-      width = 300 - margin.left - margin.right,
-      height = 250 - margin.top - margin.bottom;
+      width = (isFullscreen ? 700 : 300) - margin.left - margin.right,
+      height = (isFullscreen ? 450 : 250) - margin.top - margin.bottom;
 
     // Create SVG
     var svg = container
@@ -353,7 +369,7 @@ function generatePollutantChart(cityData, pollutant) {
       .attr("x", width / 2)
       .attr("y", 0 - margin.top / 2 + 5)
       .attr("text-anchor", "middle")
-      .style("font-size", "16px")
+      .style("font-size", isFullscreen ? "20px" : "16px")
       .text(pollutantNames[pollutant]);
 
     // Add Y axis label
@@ -381,21 +397,45 @@ function addLegend(colorScale, pm25Extent) {
 
   legend.onAdd = function (map) {
     var div = L.DomUtil.create("div", "legend");
-    var grades = d3.range(
-      pm25Extent[0],
-      pm25Extent[1],
-      (pm25Extent[1] - pm25Extent[0]) / 5
-    );
 
     div.innerHTML += "<b>Avg PM2.5</b><br>";
-    for (var i = 0; i < grades.length; i++) {
-      div.innerHTML +=
-        '<i style="background:' +
-        colorScale(grades[i]) +
-        '"></i> ' +
-        grades[i].toFixed(1) +
-        (grades[i + 1] ? "&ndash;" + grades[i + 1].toFixed(1) + "<br>" : "+");
+
+    // Create a canvas to display the gradient
+    var canvas = document.createElement("canvas");
+    canvas.width = 100;
+    canvas.height = 10;
+
+    var ctx = canvas.getContext("2d");
+
+    // Create gradient
+    var gradient = ctx.createLinearGradient(0, 0, canvas.width, 0);
+
+    // Define gradient stops
+    var numberOfStops = 10;
+    var step = (pm25Extent[1] - pm25Extent[0]) / (numberOfStops - 1);
+    for (var i = 0; i < numberOfStops; i++) {
+      var value = pm25Extent[0] + step * i;
+      gradient.addColorStop(i / (numberOfStops - 1), colorScale(value));
     }
+
+    // Fill rectangle with gradient
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Add canvas to legend
+    div.appendChild(canvas);
+
+    // Add min and max labels
+    var minLabel = document.createElement("span");
+    minLabel.style.float = "left";
+    minLabel.innerHTML = pm25Extent[0].toFixed(1);
+
+    var maxLabel = document.createElement("span");
+    maxLabel.style.float = "right";
+    maxLabel.innerHTML = pm25Extent[1].toFixed(1);
+
+    div.appendChild(minLabel);
+    div.appendChild(maxLabel);
 
     return div;
   };
@@ -404,4 +444,24 @@ function addLegend(colorScale, pm25Extent) {
 
   // Save the legend control to remove it later
   window.legendControl = legend;
+}
+
+function showFullscreenChart(cityData, pollutant) {
+  var modal = document.getElementById("chart-modal");
+  var modalChartContainer = d3.select("#modal-chart");
+
+  // Clear previous content
+  modalChartContainer.html("");
+
+  // Generate the chart in the modal
+  generatePollutantChart(cityData, pollutant, modalChartContainer, true);
+
+  // Show the modal
+  modal.classList.remove("hidden");
+
+  // Close modal when clicking the close button
+  var closeModalButton = document.getElementById("close-modal");
+  closeModalButton.addEventListener("click", function () {
+    modal.classList.add("hidden");
+  });
 }

@@ -230,6 +230,12 @@ function showInfoPanel(cityData, startDate, endDate, colorScale, pm25Extent) {
     <option value="co_median">CO</option>
     <option value="pm10_median">PM10</option>
   </select>
+  <label for="variable-select">Select Variable:</label>
+  <select id="variable-select">
+    <option value="mil_miles">MIL Miles</option>
+    <option value="temperature_max">Temperature Max</option>
+    <option value="dew_max">Dew Max</option>
+  </select>
   <button id="fullscreen-chart" title="View Fullscreen" style="padding: 5px;">Full Screen View</button>
   <div id="pollutant-chart" class="chart"></div>
 `;
@@ -240,19 +246,33 @@ function showInfoPanel(cityData, startDate, endDate, colorScale, pm25Extent) {
   infoPanel.classList.remove("hidden");
 
   // Add event listener to the dropdown
+  // Add event listeners to the dropdowns
   var pollutantSelect = document.getElementById("pollutant-select");
+  var variableSelect = document.getElementById("variable-select");
+
   pollutantSelect.addEventListener("change", function () {
-    generatePollutantChart(cityData, pollutantSelect.value);
+    generatePollutantChart(
+      cityData,
+      pollutantSelect.value,
+      variableSelect.value
+    );
+  });
+
+  variableSelect.addEventListener("change", function () {
+    generatePollutantChart(
+      cityData,
+      pollutantSelect.value,
+      variableSelect.value
+    );
   });
 
   // Generate initial chart
-  generatePollutantChart(cityData, pollutantSelect.value);
+  generatePollutantChart(cityData, pollutantSelect.value, variableSelect.value);
 
   var fullscreenButton = document.getElementById("fullscreen-chart");
   fullscreenButton.addEventListener("click", function () {
-    showFullscreenChart(cityData, pollutantSelect.value);
+    showFullscreenChart(cityData, pollutantSelect.value, variableSelect.value);
   });
-
   var closeButton = document.getElementById("close-info-panel");
   closeButton.addEventListener("click", function () {
     closeInfoPanel();
@@ -272,7 +292,13 @@ function closeInfoPanel() {
 }
 
 // Function to generate pollutant chart
-function generatePollutantChart(cityData, pollutant, container, isFullscreen) {
+function generatePollutantChart(
+  cityData,
+  pollutant,
+  variable,
+  container,
+  isFullscreen
+) {
   container = container || d3.select("#pollutant-chart");
 
   // Clear previous content
@@ -287,10 +313,16 @@ function generatePollutantChart(cityData, pollutant, container, isFullscreen) {
     pm10_median: "PM10",
   };
 
+  var variableNames = {
+    mil_miles: "MIL Miles",
+    temperature_max: "Temperature Max",
+    dew_max: "Dew Max",
+  };
+
   // Prepare data
   var parseDate = d3.timeParse("%Y-%m-%d"); // Adjust format as needed
 
-  var data = cityData.dataPoints
+  var pollutantData = cityData.dataPoints
     .map(function (d) {
       var parsedDate = parseDate(d.Date);
       var value = parseFloat(d[pollutant]);
@@ -303,9 +335,26 @@ function generatePollutantChart(cityData, pollutant, container, isFullscreen) {
       return !isNaN(d.value) && d.date !== null;
     });
 
-  console.log("Data for chart:", data);
+  var variableData = cityData.dataPoints
+    .map(function (d) {
+      var parsedDate = parseDate(d.Date);
+      var value = parseFloat(d[variable]);
+      return {
+        date: parsedDate,
+        value: value,
+      };
+    })
+    .filter(function (d) {
+      return !isNaN(d.value) && d.date !== null;
+    });
 
-  if (data.length > 0) {
+  // Merge the data to get the overall x-axis domain
+  var allDates = pollutantData
+    .map((d) => d.date)
+    .concat(variableData.map((d) => d.date));
+  var xDomain = d3.extent(allDates);
+
+  if (pollutantData.length > 0 || variableData.length > 0) {
     // Set dimensions for the chart
     var margin = { top: 20, right: 20, bottom: 50, left: 50 },
       width = (isFullscreen ? 700 : 300) - margin.left - margin.right,
@@ -321,33 +370,25 @@ function generatePollutantChart(cityData, pollutant, container, isFullscreen) {
       .attr("transform", "translate(" + margin.left + "," + margin.top + ")");
 
     // Set the ranges
-    var x = d3.scaleTime().range([0, width]);
+    var x = d3.scaleTime().range([0, width]).domain(xDomain);
     var y = d3.scaleLinear().range([height, 0]);
 
-    // Scale the range of the data
-    x.domain(
-      d3.extent(data, function (d) {
-        return d.date;
-      })
-    );
-
-    var yMin = d3.min(data, function (d) {
-      return d.value;
-    });
-    var yMax = d3.max(data, function (d) {
-      return d.value;
-    });
+    // Combine values to get y-axis domain
+    var allValues = pollutantData
+      .map((d) => d.value)
+      .concat(variableData.map((d) => d.value));
+    var yMin = d3.min(allValues);
+    var yMax = d3.max(allValues);
 
     if (yMin === yMax) {
-      // Provide a small range around the single value
       yMin = yMin - 1;
       yMax = yMax + 1;
     }
 
     y.domain([yMin, yMax]);
 
-    // Define the line
-    var valueline = d3
+    // Define the line for pollutant
+    var pollutantLine = d3
       .line()
       .x(function (d) {
         return x(d.date);
@@ -356,15 +397,39 @@ function generatePollutantChart(cityData, pollutant, container, isFullscreen) {
         return y(d.value);
       });
 
-    // Add the valueline path.
-    svg
-      .append("path")
-      .data([data])
-      .attr("class", "line")
-      .attr("d", valueline)
-      .attr("stroke", "#1f77b4")
-      .attr("stroke-width", 2)
-      .attr("fill", "none");
+    // Define the line for variable
+    var variableLine = d3
+      .line()
+      .x(function (d) {
+        return x(d.date);
+      })
+      .y(function (d) {
+        return y(d.value);
+      });
+
+    // Add the pollutant line path.
+    if (pollutantData.length > 0) {
+      svg
+        .append("path")
+        .datum(pollutantData)
+        .attr("class", "line pollutant-line")
+        .attr("d", pollutantLine)
+        .attr("stroke", "#1f77b4") // Original color
+        .attr("stroke-width", 2)
+        .attr("fill", "none");
+    }
+
+    // Add the variable line path.
+    if (variableData.length > 0) {
+      svg
+        .append("path")
+        .datum(variableData)
+        .attr("class", "line variable-line")
+        .attr("d", variableLine)
+        .attr("stroke", "red") // Red color for the variable
+        .attr("stroke-width", 2)
+        .attr("fill", "none");
+    }
 
     // Add the X Axis
     svg
@@ -388,7 +453,7 @@ function generatePollutantChart(cityData, pollutant, container, isFullscreen) {
       .attr("y", 0 - margin.top / 2 + 5)
       .attr("text-anchor", "middle")
       .style("font-size", isFullscreen ? "20px" : "16px")
-      .text(pollutantNames[pollutant]);
+      .text(pollutantNames[pollutant] + " and " + variableNames[variable]);
 
     // Add Y axis label
     svg
@@ -399,8 +464,26 @@ function generatePollutantChart(cityData, pollutant, container, isFullscreen) {
       .attr("dy", "-1em")
       .style("text-anchor", "middle")
       .text("Value");
+
+    // Add a legend
+    var legend = container.append("div").attr("class", "chart-legend");
+
+    legend
+      .append("div")
+      .html(
+        '<span style="background-color:#1f77b4;"></span>' +
+          pollutantNames[pollutant]
+      );
+
+    legend
+      .append("div")
+      .html(
+        '<span style="background-color:red;"></span>' + variableNames[variable]
+      );
   } else {
-    container.append("p").text("No data available for this pollutant.");
+    container
+      .append("p")
+      .text("No data available for the selected pollutant or variable.");
   }
 }
 
@@ -464,7 +547,7 @@ function addLegend(colorScale, pm25Extent) {
   window.legendControl = legend;
 }
 
-function showFullscreenChart(cityData, pollutant) {
+function showFullscreenChart(cityData, pollutant, variable) {
   var modal = document.getElementById("chart-modal");
   var modalChartContainer = d3.select("#modal-chart");
 
@@ -472,7 +555,13 @@ function showFullscreenChart(cityData, pollutant) {
   modalChartContainer.html("");
 
   // Generate the chart in the modal
-  generatePollutantChart(cityData, pollutant, modalChartContainer, true);
+  generatePollutantChart(
+    cityData,
+    pollutant,
+    variable,
+    modalChartContainer,
+    true
+  );
 
   // Show the modal
   modal.classList.remove("hidden");
